@@ -38,26 +38,27 @@ def check_symbol_activity():
         print(symbol, "symbol found!")
 
 ############################################################################################
-
 # Trading Logic
 def logic(rsi):
+    global initial_sl
 
     print(f"Current RSI: {rsi}")
 
     # if RSI less then 30 -> BUY
     if rsi < oversold_level:
         print("STATUS: Waiting for Stochastic Oscillator BUY signal...")
-        SO_value, SO_signal = stochastic_oscillator()
-        print(f"SO Signal: {SO_signal}\nSO Value: {SO_value:.3f}")
+        SO_k, SO_d, SO_signal = stochastic_oscillator()
         if SO_signal == 'BUY':
             print("RSI signal: BUY")
-            print(f"Stochastic signal: {SO_signal}\nStochastic value: {SO_value}")
+            print(f"Stochastic_K: {SO_k}\nStochastic_D: {SO_d}")
             # set order type
             order_type = 'BUY'
             
             point = mt5.symbol_info(symbol).point
             price = mt5.symbol_info_tick(symbol).ask
             stop_loss = price - stop_loss_pips * point
+
+            initial_sl = stop_loss
                 
             rsi_oco.open_position(symbol, order_type, lot_size, stop_loss)
 
@@ -66,30 +67,86 @@ def logic(rsi):
     # if RSI greater than 70 -> SELL
     elif rsi > overbought_level:
         print("STATUS: Waiting for Stochastic Oscillator SELL signal...")
-        SO_value, SO_signal = stochastic_oscillator()
-        print(f"SO Signal: {SO_signal}\nSO Value: {SO_value:.3f}")
+        SO_k, SO_d, SO_signal = stochastic_oscillator()
         if SO_signal == 'SELL':
             print("RSI signal: SELL")
-            print(f"Stochastic signal: {SO_signal}\nStochastic value: {SO_value}")
+            print(f"Stochastic_K: {SO_k}\nStochastic_D: {SO_d}")
             # set order type
             order_type = 'SELL'
 
-            if opened_positions < max_open_positions:
-                point = mt5.symbol_info(symbol).point
-                price = mt5.symbol_info_tick(symbol).bid
-                stop_loss = price + stop_loss_pips * point
-                
-                rsi_oco.open_position(symbol, order_type, lot_size, stop_loss)
+
+            point = mt5.symbol_info(symbol).point
+            price = mt5.symbol_info_tick(symbol).bid
+            stop_loss = price + stop_loss_pips * point
+
+            initial_sl = stop_loss
             
-            else:
-                print(f"Max positions reached!")
-                
+            rsi_oco.open_position(symbol, order_type, lot_size, stop_loss)
+
 
 
     else:
         print("RSI signal: IDLE")
 
 
+# bollinger bands indicator
+def bollinger_bands():
+    """
+    Function to calculate the Bollinger Bands for a given dataframe and a specified number of periods and standard deviations.
+
+    Parameters:
+    data (DataFrame): Historical data
+    n (int): Number of periods to calculate the Moving Average
+    std (int): Number of standard deviations to calculate the Upper and Lower Bands
+
+    Returns:
+    upper_band (Series): Upper Bollinger Band of the specified number of periods and standard deviations
+    lower_band (Series): Lower Bollinger Band of the specified number of periods and standard deviations
+    """
+    datacopy = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, start_bar, 21)
+    data = pd.DataFrame(datacopy)
+    std = 2
+    n = 20
+    ma = data['close'].rolling(n).mean()
+    std_dev = data['close'].rolling(n).std()
+    upper_band = ma + std_dev * std
+    lower_band = ma - std_dev * std
+    return upper_band, lower_band
+
+
+
+'''
+Your acceptable profit or loss per trade will depend on the time frame that 
+you are using. With 1 minute scalping, 
+you would probably be looking for a profit of around 5 pips per trade, 
+whereas a 5-minute scalp could probably provide you with a realistic target of 10 pips per trade. 
+'''
+
+
+# Breakout strategy
+def breakout_strategy(data, n, std):
+    """
+    Function to implement the Breakout Strategy for a given dataframe and a specified number of periods and standard deviations.
+
+    Parameters:
+    data (DataFrame): Historical data
+    n (int): Number of periods to calculate the Moving Average and Bollinger Bands
+    std (int): Number of standard deviations to calculate the Upper and Lower Bands
+
+    Returns:
+    signal (str): Signal for the Breakout Strategy, either BUY, SELL, or NEUTRAL
+    """
+    upper_band, lower_band = bollinger_bands(data, n, std)
+    last_close = data['close'].iloc[-1]
+    last_upper = upper_band.iloc[-1]
+    last_lower = lower_band.iloc[-1]
+    if last_close > last_upper:
+        signal = 'BUY'
+    elif last_close < last_lower:
+        signal = 'SELL'
+    else:
+        signal = 'NEUTRAL'
+    return signal
 
 # Calculate RSI
 def calculate_rsi():
@@ -107,53 +164,50 @@ def calculate_rsi():
 
 # Calculate Stochasti Oscillator
 def stochastic_oscillator():
-    bars = mt5.copy_rates_from_pos(symbol, timeframe, start_bar, num_bars)
+    bars = mt5.copy_rates_from_pos(symbol, timeframe, 0, 10)
     df = pd.DataFrame(bars)
-    close = df['close']
-    high = df['high']
-    low = df['low']
-    n = 14
-    dd = 3
-
+    n = 5   # Number of periods to use for %K calculation
+    d = 3   # Number of periods to use for %D calculation
+    s = 3   # Slowing parameter
+    overb = 90
+    overs = 10
+    
+    
     # Calculate %K
-    k = []
-    for i in range(n-1, len(close)):
-        c = close[i]
-        h = max(high[i-n+1:i+1])
-        l = min(low[i-n+1:i+1])
-        k.append((c - l) / (h - l))
-        
+    low_min = df['low'].rolling(n).min()
+    high_max = df['high'].rolling(n).max()
+    fast_k = (df['close'] - low_min) / (high_max - low_min) * 100
+    slow_k = fast_k.rolling(s).mean()
+    df['%K'] = slow_k
+
     # Calculate %D
-    d = []
-    for i in range(dd-1, len(k)):
-        d.append(sum(k[i-dd+1:i+1]) / dd)
-        
-    # Get the most recent %K and %D values
-    k = k[-1]
-    d = d[-1]
+    df['%D'] = df['%K'].rolling(d).mean()
+
+    # Get current %K and %D levels
+    k = df['%K'].iloc[-1]
+    d = df['%D'].iloc[-1]
     
     # Determine the signal
-    if k > d:
-        if k - d < 0.08:
-            return k - d, "BUY"
-        else:
-            return k - d, "NEUTRAL"
-    elif k < d:
-        if k - d > -0.08:
-            return k - d, "SELL"
-        else:
-            return k - d, "NEUTRAL"
+    if k > overb and d > overb - 10: # and k > d
+        return k, d, "SELL"
+
+    elif k < overs and d < overs + 10:
+        return k, d, "BUY"
+
     else:
-        return k - d, "NEUTRAL"
+        return k, d, "NEUTRAL"
     
 # Trailing Logic
 def check_trailing_profit():
-    # Get opened positions
-    op_pos = mt5.positions_get()
-    df = pd.DataFrame(list(op_pos), columns=op_pos[0]._asdict().keys())
-    df['time'] = pd.to_datetime(df['time'], unit='s')
-    df.drop(['time', 'time_update', 'time_msc', 'time_update_msc', 'external_id', 'reason', 'magic', 'identifier'], axis=1, inplace=True)
-    print(df)
+    try:
+        # Get opened positions
+        op_pos = mt5.positions_get()
+        df = pd.DataFrame(list(op_pos), columns=op_pos[0]._asdict().keys())
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        df.drop(['time', 'time_update', 'time_msc', 'time_update_msc', 'external_id', 'reason', 'magic', 'identifier'], axis=1, inplace=True)
+        print(df)
+    except:
+        print("Error trailing, can't get position.")
 
     # Price when position was opened
     price_open = df['price_open'][0]
@@ -178,21 +232,37 @@ def check_trailing_profit():
     ticket_id = int(df['ticket'][0])   # Int
     
 
-    # Check current profit
+    # Check current profit  # TREBA TESTIRAT ILI REVERT BACK
     if curr_profit > trailing_profit_trigger:
         if position_type == 0:
             print("Opened position is BUY")
+            for lock_profit_value in lock_on_profits:
+                if lock_profit_value > curr_profit:
+                    break
+                locked_sl = price_open + (lock_profit_value / 100000)
+                if new_sl_for_buy > locked_sl:
+                    rsi_oco.modify_position(symbol, ticket_id, locked_sl)
+                
             if new_sl_for_buy > curr_sl:
                 rsi_oco.modify_position(symbol, ticket_id, new_sl_for_buy)
-
-            # else:
-            #     if curr_price_ask > price_open:
-            #         rsi_oco.modify_position(symbol, ticket_id, new_sl_for_buy - (stop_loss_pips / 2))
-
+                
         else:
             print("Opened position is SELL")
+            for lock_profit_value in lock_on_profits:
+                if lock_profit_value > curr_profit:
+                    break
+                locked_sl = price_open - (lock_profit_value / 100000)
+                if new_sl_for_sell < locked_sl:
+                    rsi_oco.modify_position(symbol, ticket_id, locked_sl)
+                
             if new_sl_for_sell < curr_sl:
                 rsi_oco.modify_position(symbol, ticket_id, new_sl_for_sell)
+                
+    else:
+        if curr_sl != initial_sl:
+            rsi_oco.modify_position(symbol, ticket_id, initial_sl)
+
+
 #TODO: Popraviti trailing, kad je pocetak trejda i kad prvi put pomakne
 #      stop loss kad je u profitu 1 dolar, treba napraviti da ako krene padat, da vrati na pocetni stop loss
 #      cisto zbog malo fleksibilnosti, jer ovako ode malo u profit -> modificira stop loss -> krene padat ->
@@ -200,6 +270,9 @@ def check_trailing_profit():
 
 
 #TODO: Mozda ubaciti moving average (imas gotov code u chatGPTu)
+
+#TODO: Ako je zadnji trejd loss, dodati neki cooldown ili neki dodatni indikator ili kalkulaciju za 
+#      iduci trejd
 
 authorize() # Authorize MT5
 
@@ -216,8 +289,10 @@ while True:
     if opened_positions < max_open_positions:
         logic(rsi)
         
+        
     else:
         check_trailing_profit()
+        
 
 
     if opened_positions != 0:
@@ -233,5 +308,5 @@ while True:
         except:
                 print("error...")
 
-    time.sleep(0.01)
+    time.sleep(0.1)
     os.system('cls')

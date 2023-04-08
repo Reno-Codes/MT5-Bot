@@ -15,8 +15,11 @@ lot_size = 1.0
 
 max_open_positions = 1 # max number positions to open
 
-stop_loss_pips = 10
+stop_loss_pips = 5
 trailing_profit_trigger = 1 # USD
+lock_profit = True # Profit locking?
+lock_on_profits = [2, 8, 10]
+#lock_on_profits / 100000 (pips from open price fopr 1 lot size)
 
 overbought_level = 90
 oversold_level = 10
